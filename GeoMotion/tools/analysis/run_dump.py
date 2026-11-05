@@ -4,6 +4,7 @@ Usage (from repo root):
   python tools/analysis/run_dump.py --datasets 2016 --gpu 1 --run_id 2026-11-05_cvpr_seq32
 """
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -135,6 +136,38 @@ def predict_chunk(inf, frames_pil):
     }
 
 
+def make_sam_low_memory(predictor):
+    """Make predictor.init_state keep video frames and per-frame state in CPU RAM (SAM2's own options).
+
+    Values are unchanged (tensors are moved to the GPU when used); avoids OOM on ~100-frame videos on a T4.
+    The author's refine_sam calls predictor.init_state(tmp_dir) with defaults, so we bind the options here.
+    """
+    import functools
+    predictor.init_state = functools.partial(predictor.init_state, offload_video_to_cpu=True,
+                                             offload_state_to_cpu=True)
+    return predictor
+
+
+@contextlib.contextmanager
+def model_offloaded(model, device="cuda"):
+    """Move the (idle) GeoMotion model to CPU while SAM2 runs, then back."""
+    model.to("cpu")
+    _empty_cuda_cache()
+    try:
+        yield model
+    finally:
+        model.to(device)
+
+
+def _empty_cuda_cache():
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+
+
 def _has_prompt_both_parities(probs: np.ndarray) -> bool:
     any_prompt = [(probs[i] > SAM_PROMPT_THR).sum() > 0 for i in range(len(probs))]
     return any(any_prompt[1::2]) and any(any_prompt[0::2])
@@ -208,7 +241,8 @@ def run_sequence(inf, predictor, spec, data_root, video, run_dir, sequence_lengt
     probs = np.stack([per_frame[f]["prob"] for f in order])
     t1 = time.time()
     if use_sam:
-        post, no_prompt = sam_refine_safe([frames[f] for f in order], probs, predictor)
+        with model_offloaded(inf.model, inf.device):
+            post, no_prompt = sam_refine_safe([frames[f] for f in order], probs, predictor)
     else:
         post, no_prompt = (probs > 0.1).astype(np.float32), False
     t_sam = time.time() - t1
@@ -303,8 +337,8 @@ def main(argv=None):
     predictor = None
     if not args.no_sam:
         from sam2 import build_sam
-        predictor = build_sam.build_sam2_video_predictor(args.sam2_config_path, args.sam2_checkpoint_path,
-                                                         device="cuda")
+        predictor = make_sam_low_memory(build_sam.build_sam2_video_predictor(
+            args.sam2_config_path, args.sam2_checkpoint_path, device="cuda"))
 
     for key in args.datasets:
         spec = DATASETS[key]

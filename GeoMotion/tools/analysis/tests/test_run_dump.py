@@ -176,3 +176,46 @@ def test_chunked_flow_forward_matches_author():
         got = ref(**args)
     assert got.shape == expected.shape
     assert torch.allclose(got, expected, atol=1e-5)
+
+
+class _FakePredictor:
+    def __init__(self):
+        self.calls = []
+
+    def init_state(self, video_path, offload_video_to_cpu=False, offload_state_to_cpu=False,
+                   async_loading_frames=False):
+        self.calls.append((video_path, offload_video_to_cpu, offload_state_to_cpu))
+        return {"video_path": video_path}
+
+
+def test_sam_low_memory_predictor_offloads():
+    from tools.analysis.run_dump import make_sam_low_memory
+    p = make_sam_low_memory(_FakePredictor())
+    p.init_state("/tmp/frames")
+    assert p.calls == [("/tmp/frames", True, True)]
+
+
+class _FakeModel:
+    def __init__(self):
+        self.moves = []
+
+    def to(self, device):
+        self.moves.append(str(device))
+        return self
+
+
+def test_model_offloaded_moves_and_restores():
+    from tools.analysis.run_dump import model_offloaded
+    m = _FakeModel()
+    with model_offloaded(m, "cuda"):
+        assert m.moves == ["cpu"]
+    assert m.moves == ["cpu", "cuda"]
+
+
+def test_model_offloaded_restores_on_error():
+    from tools.analysis.run_dump import model_offloaded
+    m = _FakeModel()
+    with pytest.raises(ValueError):
+        with model_offloaded(m, "cuda"):
+            raise ValueError("sam failed")
+    assert m.moves == ["cpu", "cuda"]
