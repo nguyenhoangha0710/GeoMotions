@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.superpowers/
+analysis-tools.bundle
+GeoMotion/checkpoint/
+GeoMotion/results/
+GeoMotion/eval_*/
+_to_delete/
