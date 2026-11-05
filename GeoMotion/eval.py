@@ -2,7 +2,6 @@ from core.eval.eval_mask import db_eval_iou, db_eval_boundary
 from motion_seg_inference import (
     MotionSegmentationInference,
     refine_sam,
-    split_components,
     DEFAULT_SAM2_CONFIG_PATH,
     DEFAULT_SAM2_CHECKPOINT_PATH,
 )

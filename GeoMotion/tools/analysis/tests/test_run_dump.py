@@ -156,3 +156,23 @@ def test_sam_no_prompt_message_matcher():
     from tools.analysis.run_dump import _is_no_prompt_error
     assert _is_no_prompt_error(RuntimeError("No input points or masks are provided for any object"))
     assert not _is_no_prompt_error(RuntimeError("CUDA out of memory. Tried to allocate 4.10 GiB"))
+
+
+def test_chunked_flow_forward_matches_author():
+    """Patched MotionAwareDecoder.forward (encode + downsample per micro-batch) == author's forward."""
+    torch = pytest.importorskip("torch")
+    mod = pytest.importorskip("pi3.models.pi3_conf_flow_cam_lowfeature_wo_mean")
+    from tools.analysis.run_dump import install_chunked_flow_forward
+    torch.manual_seed(0)
+    C, B, N, H, W, start = 8, 1, 7, 28, 28, 1
+    hw = start + (H // 14) * (W // 14)
+    ref = mod.MotionAwareDecoder(hidden_dim=2 * C, patch_size=14).eval()
+    args = dict(low_hidden=torch.randn(B * N, hw, 2 * C), hidden=torch.randn(B * N, hw, 2 * C),
+                optical_flow=torch.rand(B, N, H, W) * 5, camera_hidden=torch.randn(B * N, hw, 512),
+                patch_start_idx=start, H=H, W=W, B=B, N=N)
+    with torch.no_grad():
+        expected = ref(**args)
+        install_chunked_flow_forward(ref, 3)
+        got = ref(**args)
+    assert got.shape == expected.shape
+    assert torch.allclose(got, expected, atol=1e-5)

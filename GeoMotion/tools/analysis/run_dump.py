@@ -48,6 +48,43 @@ def make_flow_encoder_microbatch(inner, k: int):
     return FlowEncoderMicrobatch()
 
 
+def install_chunked_flow_forward(mad, k: int):
+    """Replace MotionAwareDecoder.forward with a copy of the author's forward in which the flow CNN
+    *and* the bilinear downsample run on at most k frames at a time.
+
+    Both ops are per-frame, so the result is identical; peak memory drops because the full-resolution
+    [B*N,128,H,W] tensor is never materialised (it is ~3.2 GB for 25 frames at 518x518).
+    Mirrors pi3/models/pi3_conf_flow_cam_lowfeature_wo_mean.py: MotionAwareDecoder.forward.
+    """
+    import types
+
+    import torch
+    import torch.nn.functional as F
+
+    def forward(self, low_hidden, hidden, optical_flow, camera_hidden, patch_start_idx, H, W, B, N):
+        low_hidden_patch = low_hidden[:, patch_start_idx:]
+        hidden_patch = hidden[:, patch_start_idx:]
+        camera_patch = camera_hidden[:, patch_start_idx:]
+        combined_hidden = torch.cat([low_hidden_patch, hidden_patch], dim=-1)
+        projected_hidden = self.feature_proj(combined_hidden)
+        x = optical_flow.view(B * N, 1, H, W)
+        size = (H // self.patch_size, W // self.patch_size)
+        flow_feat_down = torch.cat([
+            F.interpolate(self.flow_encoder(x[i:i + k]), size=size, mode='bilinear', align_corners=False)
+            for i in range(0, B * N, k)
+        ], dim=0)
+        num_patches = flow_feat_down.shape[2] * flow_feat_down.shape[3]
+        flow_patches = flow_feat_down.permute(0, 2, 3, 1).reshape(B * N, num_patches, 128)
+        combined = torch.cat([projected_hidden, flow_patches, camera_patch], dim=-1)
+        fused_patch = self.fusion_proj(combined)
+        special_tokens = torch.cat([low_hidden[:, :patch_start_idx], hidden[:, :patch_start_idx]], dim=-1)
+        special_tokens_proj = self.feature_proj(special_tokens)
+        return torch.cat([special_tokens_proj, fused_patch], dim=1)
+
+    mad.forward = types.MethodType(forward, mad)
+    return mad
+
+
 def compute_chunk_flows(video01, raft_fn):
     """Mirror compute_optical_flow_magnitude_batch(bidirectional=True, fusion_method='max').
 
@@ -237,6 +274,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
+    # reduces fragmentation OOMs on the 15 GB T4; does not change any computation
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     import torch
     import torchvision
     from motion_seg_inference import MotionSegmentationInference
@@ -260,8 +299,7 @@ def main(argv=None):
 
     inf = MotionSegmentationInference(args.model_path, pi3_model_path=args.pi3_model_path, device="cuda")
     if args.flow_cnn_microbatch > 0:
-        mad = inf.model.motion_aware_decoder
-        mad.flow_encoder = make_flow_encoder_microbatch(mad.flow_encoder, args.flow_cnn_microbatch)
+        install_chunked_flow_forward(inf.model.motion_aware_decoder, args.flow_cnn_microbatch)
     predictor = None
     if not args.no_sam:
         from sam2 import build_sam

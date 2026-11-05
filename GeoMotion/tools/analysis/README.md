@@ -32,8 +32,12 @@ Kết quả thử: _(ghi vào đây sau khi chạy)_
 
 ## 1. Kiểm chứng: Runner phải khớp `eval.py` gốc
 
+Chọn video ngắn (≤ ~64 frame → nhóm ≤ 16 frame): `eval.py` gốc **không có** cách giảm bộ nhớ nên hết bộ nhớ T4
+với video dài (ví dụ `parkour` 100 frame → nhóm 25 frame). Runner dùng `install_chunked_flow_forward` (CNN flow +
+nội suy theo lô, toán học tương đương — có test `test_chunked_flow_forward_matches_author`) nên chạy được video dài.
+
 ```bash
-bash tools/analysis/make_subset.sh 2016 blackswan parkour
+bash tools/analysis/make_subset.sh 2016 blackswan car-shadow
 
 # eval.py gốc, 2 lần (đo độ dao động của SAM2)
 for k in a b; do
