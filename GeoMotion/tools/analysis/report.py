@@ -102,18 +102,47 @@ def _gray3(x01):
     return np.repeat((np.clip(x01, 0, 1) * 255).astype(np.uint8)[..., None], 3, axis=2)
 
 
-def render_panel(rgb, gt, prob_pre, mask_post, mag, vec) -> np.ndarray:
-    """RGB | GT | prob pre | mask post | error overlay | |flow| | flow direction."""
-    heat = (plt.get_cmap("magma")(np.clip(prob_pre, 0, 1))[..., :3] * 255).astype(np.uint8)
-    pred = mask_post > 0.1
+PRE_THR = 0.1  # author's threshold (eval.py): the pre-SAM mask shown is the one J_pre_0.1 is computed on
+
+
+def _overlay(rgb, pred, gt):
     over = (rgb * 0.45).astype(np.uint8)
     over[pred & gt] = (27, 175, 122)     # TP
     over[pred & ~gt] = (235, 104, 52)    # FP
     over[~pred & gt] = (42, 120, 214)    # FN
+    return over
+
+
+def _label(tile, text):
+    t = np.ascontiguousarray(tile)
+    scale = max(0.4, t.shape[0] / 480 * 1.0)
+    cv2.putText(t, text, (8, int(28 * scale) + 4), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 4, cv2.LINE_AA)
+    cv2.putText(t, text, (8, int(28 * scale) + 4), cv2.FONT_HERSHEY_SIMPLEX, scale, (255, 255, 255), 1, cv2.LINE_AA)
+    return t
+
+
+def render_panel(rgb, gt, prob_pre, mask_post, mag, vec, thr: float = PRE_THR) -> np.ndarray:
+    """8 tiles: RGB | GT | mask before SAM2 (prob > thr) | mask after SAM2 | errors before | errors after
+    | |flow| | flow direction. Errors: green TP, orange FP, blue FN."""
+    pre = prob_pre > thr
+    post = mask_post > 0.1
     m = mag / (np.percentile(mag, 99) + 1e-6) if mag.max() > 0 else mag
-    tiles = [rgb, _gray3(gt.astype(np.float32)), heat, _gray3(pred.astype(np.float32)), over, _gray3(m),
-             flow_to_color(vec)]
+    tiles = [
+        _label(rgb, "RGB"),
+        _label(_gray3(gt.astype(np.float32)), "GT"),
+        _label(_gray3(pre.astype(np.float32)), f"mask truoc SAM2 (>{thr})"),
+        _label(_gray3(post.astype(np.float32)), "mask sau SAM2"),
+        _label(_overlay(rgb, pre, gt), "loi truoc SAM2"),
+        _label(_overlay(rgb, post, gt), "loi sau SAM2"),
+        _label(_gray3(m), "do lon flow"),
+        _label(flow_to_color(vec), "huong flow"),
+    ]
     return np.concatenate(tiles, axis=1)
+
+
+def _half(frame):
+    h, w = frame.shape[:2]
+    return cv2.resize(frame, (w // 2 // 2 * 2, h // 2 // 2 * 2), interpolation=cv2.INTER_AREA)
 
 
 def select_gallery(df, k_label=20, k_worst_videos=10, k_per_video=3, k_sam_broke=20) -> pd.DataFrame:
@@ -315,9 +344,9 @@ def build_report(run_dir, frame_df, summary_df, datasets, data_root, media: bool
             p.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(panel).save(p, quality=88)
         for ds in datasets:
-            for v in vt[vt["dataset"] == ds].head(5)["video"]:
+            for v in vt[vt["dataset"] == ds]["video"]:  # every video; frames halved so players can open them
                 rows = frame_df[(frame_df["dataset"] == ds) & (frame_df["video"] == v)].sort_values("orig_idx")
-                write_mp4([_panel_for(run_dir, data_root, r) for _, r in rows.iterrows()],
+                write_mp4([_half(_panel_for(run_dir, data_root, r)) for _, r in rows.iterrows()],
                           out / "videos" / ds / f"{v}.mp4")
     cfg_path = run_dir / "config.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}

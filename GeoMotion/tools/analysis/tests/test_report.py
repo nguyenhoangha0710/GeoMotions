@@ -32,7 +32,21 @@ def test_render_panel_shape():
     rgb = np.zeros((h, w, 3), np.uint8)
     m = np.zeros((h, w), np.float32)
     panel = render_panel(rgb, m > 0, m, m, m, np.zeros((2, h, w), np.float32))
-    assert panel.shape == (48, 448, 3)
+    assert panel.shape == (48, 512, 3)  # 8 tiles
+
+
+def test_render_panel_pre_sam_tile_is_mask():
+    """Tile 3 shows the pre-SAM prediction binarised at the author's threshold (0.1), not a heatmap."""
+    h, w = 48, 64
+    prob = np.zeros((h, w), np.float32)
+    prob[30:, :32] = 0.3   # above 0.1 -> foreground
+    prob[30:, 32:] = 0.05  # below 0.1 -> background
+    zeros = np.zeros((h, w), np.float32)
+    panel = render_panel(np.zeros((h, w, 3), np.uint8), zeros > 0, prob, zeros, zeros,
+                         np.zeros((2, h, w), np.float32))
+    tile = panel[30:, 2 * w:3 * w]  # bottom part, away from the text label
+    assert set(np.unique(tile)) <= {0, 255}
+    assert (tile[:, :32] == 255).all() and (tile[:, 32:] == 0).all()
 
 
 def test_select_gallery_caps():
@@ -72,4 +86,4 @@ def test_build_report_smoke(fake_run, media):  # noqa: F811
     assert any((out / "plots").rglob("*.png"))
     if media:
         assert any((out / "gallery").rglob("*.jpg"))
-        assert any((out / "videos").rglob("*.mp4"))
+        assert sorted(p.name for p in (out / "videos").rglob("*.mp4")) == ["blackswan.mp4"]  # every video
